@@ -119,7 +119,7 @@ static bool send_command(WootingHID *dev, uint8_t cmd, uint32_t param) {
  */
 static int parse_response(const uint8_t *buf, int len, int offset,
                           uint8_t *body, int body_size, int *body_len) {
-    if (len < offset + 5) return -1;
+    if (len < offset + 6) return -1;
 
     if (buf[offset] != MAGIC_0 || buf[offset + 1] != MAGIC_1) return -1;
 

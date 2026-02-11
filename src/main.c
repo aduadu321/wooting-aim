@@ -4,9 +4,9 @@
  * New in v0.7:
  *   - Velocity-aware dynamic AP/RT (scales with proximity to accuracy threshold)
  *   - Jiggle peek detection (rapid A-D-A pre-arms next direction)
- *   - Analog-proportional velocity estimation (uses key depth, not binary)
- *   - Counter-strafe phase decay (ultra-aggro first 50ms, then relaxes)
- *   - CPU yield when idle (Sleep(0) instead of 100% spin)
+ *   - Binary velocity estimation (CS2 treats input as ON/OFF, not analog)
+ *   - Counter-strafe phase decay (ultra-aggro first 80ms, then relaxes)
+ *   - CPU yield via SwitchToThread() with configurable poll rate
  *
  * v0.6 features:
  *   - CS2 Game State Integration (weapon detection, round phase)
@@ -680,10 +680,15 @@ static void vel_update(VelEstimator *ve, float pos_analog, float neg_analog,
 /* ================================================================
  * GLOBAL CLEANUP
  * ================================================================ */
+/* Forward declarations for cleanup */
+typedef struct { FILE *file; } Stats;
+static void stats_close(Stats *st);
+
 static volatile bool g_running = true;
 static WootingHID *g_hid = NULL;
 static bool g_adaptive = false;
 static HANDLE g_gsi_thread = NULL;
+static Stats *g_stats = NULL;  /* for cleanup on Ctrl+C */
 
 static void restore_and_cleanup(void) {
     if (g_hid && g_adaptive) {
@@ -714,6 +719,9 @@ static void restore_and_cleanup(void) {
 
     /* Cleanup winsock */
     WSACleanup();
+
+    /* Flush and close stats file */
+    if (g_stats) stats_close(g_stats);
 
     /* Restore timer */
     restore_timer_resolution();
@@ -818,8 +826,8 @@ static void axis_update(Axis *ax, float pos, float neg,
         (ax->state == S_COUNTER_POS || ax->state == S_COUNTER_NEG)) {
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
-        ax->jiggle_times[ax->jiggle_idx % 4] = now;
-        ax->jiggle_idx++;
+        ax->jiggle_times[ax->jiggle_idx & 3] = now;
+        ax->jiggle_idx = (ax->jiggle_idx + 1) & 0x7FFFFFFF;
 
         /* Check if enough recent counter-strafes within the window */
         int recent = 0;
@@ -846,10 +854,6 @@ static void axis_update(Axis *ax, float pos, float neg,
 /* ================================================================
  * STATISTICS
  * ================================================================ */
-typedef struct {
-    FILE *file;
-} Stats;
-
 static void stats_init(Stats *st, const char *path) {
     st->file = fopen(path, "a");
     if (st->file) {
@@ -956,7 +960,7 @@ static float vel_scale_ap(float base_ap, float vel_ratio) {
     float t = (vel_ratio - VEL_AGGRO_ZONE) / (1.0f - VEL_AGGRO_ZONE);
     float factor = 1.0f - t * (1.0f - VEL_MIN_AP_FACTOR);
     float result = base_ap * factor;
-    if (result < 0.1f) result = 0.1f; /* firmware minimum */
+    if (result < 0.15f) result = 0.15f; /* prevent ghost inputs from stem wobble */
     return result;
 }
 
@@ -1315,8 +1319,10 @@ int main(int argc, char *argv[]) {
     ctx.vel_v.last_update = ctx.vel_h.last_update;
 
     /* Stats */
-    if (g_cfg.stats_enabled && adaptive_mode)
+    if (g_cfg.stats_enabled && adaptive_mode) {
         stats_init(&ctx.stats, "wooting-aim-stats.csv");
+        g_stats = &ctx.stats;
+    }
 
     if (adaptive_mode && hid) {
         printf("\n*** ADAPTIVE MODE v4 ***\n");
